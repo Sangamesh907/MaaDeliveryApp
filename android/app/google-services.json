@@ -1,0 +1,49 @@
+{
+  "project_info": {
+    "project_number": "993336687491",
+    "firebase_url": "https://maadeliveryapp-default-rtdb.firebaseio.com",
+    "project_id": "maadeliveryapp",
+    "storage_bucket": "maadeliveryapp.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:993336687491:android:53601742cb360e9ec254b6",
+        "android_client_info": {
+          "package_name": "com.maadeliveryapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAo2XRkcrdut2fdAaxCbw7Ll-uspHQG6yk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:993336687491:android:ac89004b12a52eedc254b6",
+        "android_client_info": {
+          "package_name": "com.maauserapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAo2XRkcrdut2fdAaxCbw7Ll-uspHQG6yk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

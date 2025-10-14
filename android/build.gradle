@@ -1,0 +1,37 @@
+buildscript {
+    ext {
+        buildToolsVersion = "35.0.0"
+        minSdkVersion = 24
+        compileSdkVersion = 35
+        targetSdkVersion = 35
+        ndkVersion = "27.1.12297006"
+        kotlinVersion = "2.1.20"
+    }
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath("com.android.tools.build:gradle:8.2.2") // ✅ latest AGP
+        classpath("com.google.gms:google-services:4.4.3") // ✅ Firebase Plugin
+        classpath("com.facebook.react:react-native-gradle-plugin")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.20") // ✅ Kotlin
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    // ✅ Force consistent Google Play Services versions
+    configurations.all {
+        resolutionStrategy {
+            force "com.google.android.gms:play-services-location:21.3.0"
+            force "com.google.android.gms:play-services-maps:19.0.0"
+        }
+    }
+}
+
+apply plugin: "com.facebook.react.rootproject"
