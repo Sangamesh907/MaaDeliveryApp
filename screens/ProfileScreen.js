@@ -8,6 +8,7 @@ import {
   Image,
   Alert,
   ActivityIndicator,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -36,8 +37,9 @@ const ProfileScreen = ({ navigation }) => {
   const { token, logout } = useContext(DeliveryContext);
   const [profileData, setProfileData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false); // New state for pull-to-refresh
+  const [profileImageError, setProfileImageError] = useState(false);
 
-  // --- Navigation Handlers ---
   const handleEditProfile = () => navigation.navigate('EditProfile');
   const handleOrderHistory = () => navigation.navigate('OrderHistory');
   const handleEarnings = () => navigation.navigate('Earnings');
@@ -51,41 +53,63 @@ const ProfileScreen = ({ navigation }) => {
   const handleLogout = () => {
     Alert.alert('Logout', 'Are you sure you want to logout?', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Logout', onPress: async () => {
+      {
+        text: 'Logout',
+        onPress: async () => {
+          console.log('[Profile] 🔒 User logging out...');
           await logout();
           navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
-        }, style: 'destructive' },
+        },
+        style: 'destructive',
+      },
     ]);
   };
 
   const fetchProfile = async () => {
-    if (!token) return;
+    if (!token) {
+      console.warn('[Profile] ⚠️ Token missing, cannot fetch profile.');
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     try {
-      console.log('⏱️ Fetching profile...');
-      setLoading(true);
+      if (!refreshing) setLoading(true); // Only show full loader if not pull-to-refresh
+      console.log('[Profile] ⏱️ Fetching profile...');
       const res = await axios.get(`${BASE_URL}/api/deliveryme`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.data) {
-        console.log('📌 Profile data set successfully', res.data);
+        console.log('[Profile] 📌 Profile data set successfully', res.data);
         setProfileData(res.data);
+        setProfileImageError(false);
       } else {
-        console.warn('⚠️ No profile data found');
+        console.warn('[Profile] ⚠️ No profile data found in response.');
         Alert.alert('Error', 'No profile data found');
         setProfileData(null);
       }
     } catch (err) {
-      console.warn('⚠️ Fetch profile error:', err?.message || err);
+      console.warn('[Profile] ❌ Fetch profile error:', err?.message || err);
       Alert.alert('Error', 'Unable to fetch profile');
+      setProfileData(null);
     } finally {
       setLoading(false);
-      console.log('⏱️ fetchProfile finished, loading=false');
+      setRefreshing(false);
+      console.log('[Profile] ⏱️ fetchProfile finished');
     }
   };
 
   useEffect(() => {
     fetchProfile();
-  }, [token]);
+    const unsubscribe = navigation.addListener('focus', () => {
+      fetchProfile();
+    });
+    return unsubscribe;
+  }, [token, navigation]);
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    fetchProfile();
+  };
 
   const ProfileItem = ({ icon, text, onPress }) => (
     <TouchableOpacity style={styles.profileItem} onPress={onPress}>
@@ -95,7 +119,7 @@ const ProfileScreen = ({ navigation }) => {
     </TouchableOpacity>
   );
 
-  if (loading) {
+  if (loading && !refreshing) {
     return (
       <View style={styles.loaderContainer}>
         <ActivityIndicator size="large" color="#4CAF50" />
@@ -107,28 +131,32 @@ const ProfileScreen = ({ navigation }) => {
   if (!profileData) {
     return (
       <View style={styles.loaderContainer}>
-        <Text>No profile data available</Text>
+        <Text>No profile data available. Please try logging in again.</Text>
       </View>
     );
   }
 
-  const profileImageUri = getProfileImageUri(profileData.name);
+  const photoUrlFromDB = fixBackendPath(profileData.photo_url);
+  const heuristicUri = getProfileImageUri(profileData.name);
+  const initialProfileUri = photoUrlFromDB || heuristicUri;
+  const profileSourceUri = profileImageError ? DEFAULT_PROFILE_URI : initialProfileUri;
+
   const licenseFrontUri = fixBackendPath(profileData.driving_license_front);
   const licenseBackUri = fixBackendPath(profileData.driving_license_back);
 
-  console.log('✅ Rendering ProfileScreen with profileData:', profileData);
-  console.log('🖼️ Profile URI:', profileImageUri);
-  console.log('🖼️ License Front URI:', licenseFrontUri);
-  console.log('🖼️ License Back URI:', licenseBackUri);
-
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView>
+      <ScrollView
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      >
         <View style={styles.profileHeader}>
           <Image
-            source={{ uri: profileImageUri }}
+            source={{ uri: profileSourceUri }}
             style={styles.profileImage}
-            onError={() => console.warn(`⚠️ Failed to load image for user: ${profileData.name}`)}
+            onError={(e) => {
+              console.warn(`[Profile] ⚠️ Failed to load image: ${initialProfileUri}. Falling back to default.`);
+              setProfileImageError(true);
+            }}
           />
           <View style={styles.profileInfo}>
             <Text style={styles.name}>{profileData.name}</Text>
@@ -136,10 +164,7 @@ const ProfileScreen = ({ navigation }) => {
             <Text style={styles.contact}>{profileData.phone_number}</Text>
             <Text style={styles.contact}>Vehicle: {profileData.vehicle}</Text>
           </View>
-          <TouchableOpacity
-            style={styles.editButton}
-            onPress={handleEditProfile}
-          >
+          <TouchableOpacity style={styles.editButton} onPress={handleEditProfile}>
             <Icon name="pencil-outline" size={20} color="#000" />
             <Text style={styles.editButtonText}>Edit</Text>
           </TouchableOpacity>
@@ -186,14 +211,6 @@ const ProfileScreen = ({ navigation }) => {
             text="Privacy Policy"
             onPress={handlePrivacyPolicy}
           />
-        </View>
-
-        <View style={styles.licensesContainer}>
-          <Text style={styles.licenseTitle}>Driving License</Text>
-          <View style={styles.licenseImages}>
-            <Image source={{ uri: licenseFrontUri }} style={styles.licenseImage} />
-            <Image source={{ uri: licenseBackUri }} style={styles.licenseImage} />
-          </View>
         </View>
 
         <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>

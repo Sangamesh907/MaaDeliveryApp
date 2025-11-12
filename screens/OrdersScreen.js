@@ -1,33 +1,45 @@
 // screens/OrdersScreen.js
-import React, { useState } from 'react';
+import React, { useState, useContext, useEffect } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import NewOrders from './NewOrders';
 import OngoingOrders from './OngoingOrders';
 import DeliveredOrders from './DeliveredOrders';
+import { DeliveryContext } from '../Context/DeliveryContext';
 
 const OrdersScreen = () => {
+  const { acceptedOrderId } = useContext(DeliveryContext);
   const [activeTab, setActiveTab] = useState('New');
 
+  // Switch to Ongoing automatically if an order is accepted
+  useEffect(() => {
+    if (acceptedOrderId) setActiveTab('Ongoing');
+  }, [acceptedOrderId]);
+
   const renderContent = () => {
-    if (activeTab === 'New') return <NewOrders onOrderAccepted={() => setActiveTab('Ongoing')} />;
+    if (activeTab === 'New') return <NewOrders />;
     if (activeTab === 'Ongoing') return <OngoingOrders />;
     if (activeTab === 'Delivered') return <DeliveredOrders />;
+    return null;
   };
 
   return (
     <View style={{ flex: 1 }}>
+      {/* Tabs */}
       <View style={styles.tabContainer}>
         {['New', 'Ongoing', 'Delivered'].map((tab) => (
           <TouchableOpacity
             key={tab}
             style={[styles.tabButton, activeTab === tab && styles.activeTab]}
-            onPress={() => setActiveTab(tab)}>
+            onPress={() => setActiveTab(tab)}
+          >
             <Text style={activeTab === tab ? styles.activeText : styles.inactiveText}>
               {tab}
             </Text>
           </TouchableOpacity>
         ))}
       </View>
+
+      {/* Tab Content */}
       {renderContent()}
     </View>
   );

@@ -18,10 +18,13 @@ export const DeliveryProvider = ({ children }) => {
   const [isOnline, setIsOnline] = useState(false);
   const [orders, setOrders] = useState([]);
   const [ongoingOrders, setOngoingOrders] = useState([]);
+  const [orderHistory, setOrderHistory] = useState([]);
+  const [loadingOrders, setLoadingOrders] = useState(false);
   const [token, setToken] = useState(null);
   const [deliveryId, setDeliveryId] = useState(null);
   const [role, setRole] = useState(null);
   const [profile, setProfile] = useState(null);
+  const [acceptedOrderId, setAcceptedOrderId] = useState(null); // NEW
 
   const wsRef = useRef(null);
   const watchIdRef = useRef(null);
@@ -29,16 +32,15 @@ export const DeliveryProvider = ({ children }) => {
   const appState = useRef(AppState.currentState);
 
   const api = axios.create({ baseURL: API_BASE, timeout: 15000 });
+  const validStatuses = ['assigned', 'picked', 'delivered'];
 
-  // --- Safe Navigation ---
+  // --- Safe navigation ---
   const safeNavigate = (screen, params) => {
-    if (navigationRef.isReady()) {
-      console.log(`🌐 Navigating to screen: ${screen} with params:`, params);
-      navigationRef.navigate(screen, params);
-    } else console.warn('⚠️ Navigation not ready:', screen, params);
+    if (navigationRef.isReady()) navigationRef.navigate(screen, params);
+    else console.warn('[Context] Navigation not ready:', screen, params);
   };
 
-  // --- Load saved auth/profile ---
+  // --- Load saved auth/profile on mount ---
   useEffect(() => {
     (async () => {
       try {
@@ -52,122 +54,177 @@ export const DeliveryProvider = ({ children }) => {
         if (savedRole) setRole(savedRole);
         if (savedProfile) setProfile(JSON.parse(savedProfile));
 
-        console.log('📦 Loaded saved auth/profile:', {
-          token: !!savedToken,
-          deliveryId: savedDeliveryId,
-          role: savedRole,
-          profile: !!savedProfile,
-        });
+        console.log('[Context] 📦 Loaded saved credentials');
       } catch (err) {
-        console.warn('⚠️ Failed to load auth/profile', err);
+        console.warn('[Context] ⚠️ Failed to load saved data', err);
       }
     })();
   }, []);
 
-  // --- Save auth/profile ---
+  // --- Save token & profile ---
   const saveAuth = async ({ token: t, deliveryId: id, role: r, profileData: p }) => {
     try {
-      if (t) { await AsyncStorage.setItem(STORAGE_TOKEN_KEY, t); setToken(t); console.log('💾 Token saved'); }
-      if (id) { await AsyncStorage.setItem(STORAGE_DELIVERY_ID_KEY, id.toString()); setDeliveryId(id.toString()); console.log('💾 Delivery ID saved'); }
-      if (r) { await AsyncStorage.setItem(STORAGE_ROLE_KEY, r); setRole(r); console.log('💾 Role saved'); }
-      if (p) { await AsyncStorage.setItem(STORAGE_PROFILE_KEY, JSON.stringify(p)); setProfile(p); console.log('💾 Profile saved'); }
-      console.log('💾 Auth & profile saved successfully');
-    } catch (err) { console.warn('⚠️ saveAuth error', err); }
+      if (t) { await AsyncStorage.setItem(STORAGE_TOKEN_KEY, t); setToken(t); }
+      if (id) { await AsyncStorage.setItem(STORAGE_DELIVERY_ID_KEY, id.toString()); setDeliveryId(id.toString()); }
+      if (r) { await AsyncStorage.setItem(STORAGE_ROLE_KEY, r); setRole(r); }
+      if (p) { await AsyncStorage.setItem(STORAGE_PROFILE_KEY, JSON.stringify(p)); setProfile(p); }
+      console.log('[Context] 💾 Auth & Profile saved');
+    } catch (err) {
+      console.warn('[Context] ⚠️ saveAuth error', err);
+    }
   };
 
   // --- Logout ---
   const logout = async () => {
     try {
-      await AsyncStorage.multiRemove([
-        STORAGE_TOKEN_KEY,
-        STORAGE_DELIVERY_ID_KEY,
-        STORAGE_ROLE_KEY,
-        STORAGE_PROFILE_KEY,
-      ]);
-      console.log('🔒 Logged out successfully');
-    } catch (err) { console.warn('⚠️ logout error', err); }
-    finally {
+      await AsyncStorage.multiRemove([STORAGE_TOKEN_KEY, STORAGE_DELIVERY_ID_KEY, STORAGE_ROLE_KEY, STORAGE_PROFILE_KEY]);
+    } catch (err) {
+      console.warn('[Context] ⚠️ logout error', err);
+    } finally {
       disconnectWebSocket();
       stopLocationTracking();
-      setToken(null); setDeliveryId(null); setRole(null);
-      setProfile(null); setOrders([]); setOngoingOrders([]); setIsOnline(false);
-      console.log('🛑 Context reset after logout');
+      setToken(null); setDeliveryId(null); setRole(null); setProfile(null);
+      setOrders([]); setOngoingOrders([]); setOrderHistory([]); setIsOnline(false);
+      setAcceptedOrderId(null);
+      console.log('[Context] 🔒 Logged out');
     }
   };
 
-  // --- Axios request helper ---
-  const authApi = (method, url, data = null) => {
+  // --- Axios helper with token ---
+  const authApi = async (method, url, data = null) => {
     if (!token) throw new Error('Token missing');
-    console.log(`📤 API Request: [${method.toUpperCase()}] ${url}`, data || '');
-    return api.request({
-      method,
-      url,
-      data,
-      headers: { Authorization: `Bearer ${token}` }
-    });
+    try {
+      const response = await api.request({ method, url, data, headers: { Authorization: `Bearer ${token}` } });
+      return response;
+    } catch (error) {
+      console.warn(`[Context] ❌ API Error: ${url}`, error?.response?.data || error.message);
+      throw error;
+    }
   };
 
   // --- Fetch Delivery Profile ---
   const fetchDeliveryProfile = async () => {
+    if (!token) return null;
     try {
       const res = await authApi('get', '/deliveryme');
       setProfile(res.data);
-      console.log('📝 Delivery profile fetched:', res.data);
+      await AsyncStorage.setItem(STORAGE_PROFILE_KEY, JSON.stringify(res.data));
+      console.log('[Context] 📝 Profile fetched', res.data);
       return res.data;
     } catch (err) {
-      console.warn('❌ Failed to fetch profile', err?.response?.data || err.message || err);
+      console.warn('[Context] ❌ Failed to fetch profile', err?.response?.data || err.message);
+      return null;
     }
   };
 
-  // --- Fetch ongoing orders ---
-  const fetchOngoingOrders = async () => {
-    if (!token) return console.warn('⚠️ Token missing, cannot fetch ongoing orders.');
-    try {
-      const res = await authApi('get', '/orders/delivery/me');
-      const fetched = Array.isArray(res.data.orders) ? res.data.orders : [];
-      const normalized = fetched.map(o => ({ ...o, id: o._id }));
-      setOngoingOrders(normalized);
-      console.log('✅ Ongoing orders fetched:', normalized);
-    } catch (err) {
-      console.warn('❌ fetchOngoingOrders error', err?.response?.data || err.message || err);
+ // --- Orders Logic ---
+const fetchOrders = async () => {
+  if (!token) return;
+  setLoadingOrders(true);
+  try {
+    const res = await authApi('get', '/deliveryboy/orders');
+    const data = res.data;
+
+    if (data.status === 'success') {
+      // Helper to normalize orders
+      const normalizeOrders = (arr) =>
+        (arr || []).map(o => ({
+          ...o,
+          id: o._id || o.id,
+          customerName:
+            o.customer?.name && o.customer.name !== 'Unknown'
+              ? o.customer.name
+              : o.address?.label || 'Customer',
+          orderNumber: o._id?.slice(-5).toUpperCase() || 'N/A',
+          totalAmount: o.total_price || o.total || 0,
+          createdDate: o.created_at ? new Date(o.created_at).toLocaleDateString() : 'N/A',
+          statusText: o.delivery_status || o.status || 'N/A',
+        }));
+
+      const ongoing = normalizeOrders(data.ongoing_orders);
+      const past = normalizeOrders(data.past_orders);
+
+      setOngoingOrders(ongoing);
+      setOrderHistory(past);
+      setOrders([...ongoing, ...past]);
+
+      console.log(`[Context] ✅ Orders fetched: ongoing=${ongoing.length}, past=${past.length}`);
+    } else {
+      setOngoingOrders([]);
+      setOrderHistory([]);
+      setOrders([]);
+      console.warn('[Context] ⚠️ fetchOrders returned no orders');
     }
-  };
+  } catch (err) {
+    console.warn('[Context] ❌ fetchOrders error', err?.response?.data || err.message);
+    setOngoingOrders([]);
+    setOrderHistory([]);
+    setOrders([]);
+  } finally {
+    setLoadingOrders(false);
+  }
+};
 
-  // --- Update Order Status ---
-  const validStatuses = ['assigned', 'picked', 'delivered'];
 
-  const updateOrderStatus = async (orderId, status) => {
-    if (!token) return console.warn('⚠️ Cannot update order status: token missing');
+ // --- Update Order Status ---
+const updateOrderStatus = async (orderId, status) => {
+  console.log("🚀 updateOrderStatus CALLED:", { orderId, status });
 
-    if (!validStatuses.includes(status)) {
-      console.warn('⚠️ Invalid order status:', status);
-      return;
-    }
+  // Updated list to match backend
+  const allowedStatuses = [
+    "assigned",
+    "chef_arrived",
+    "picked_up",
+    "out_for_delivery",
+    "delivered",
+  ];
 
-    try {
-      const res = await authApi('put', `/orderdeliveryupdate/${orderId}/status`, { status });
-      console.log('📦 Order status updated:', res.data);
+  if (!allowedStatuses.includes(status)) {
+    console.warn("⚠️ Invalid status requested:", status);
+    return;
+  }
 
-      setOngoingOrders(prev =>
-        prev.map(o =>
-          o.id === orderId
-            ? { ...o, status: res.data.new_delivery_status, updatedAt: new Date().toISOString() }
-            : o
-        )
-      );
+  try {
+    const token = await AsyncStorage.getItem(STORAGE_TOKEN_KEY);
+    console.log("🔑 Token retrieved:", token ? "✅ Found" : "❌ Missing");
 
-      return res.data;
-    } catch (err) {
-      console.warn('❌ Failed to update order status:', err?.response?.data || err.message);
-    }
-  };
+    const url = `${API_BASE}/orderdeliveryupdate/${orderId}/status`;
+    console.log("🌍 PUT URL:", url);
 
-  // --- WebSocket management ---
+    const response = await axios.put(
+      url,
+      { status }, // Backend expects {"status": "chef_arrived"}
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    console.log("✅ Order status updated successfully:", response.data);
+
+    // Refresh orders after update
+    fetchOrders();
+    return response.data;
+
+  } catch (err) {
+    console.error(
+      "❌ Failed to update order status:",
+      err.response?.data || err.message
+    );
+    Alert.alert(
+      "Update Failed",
+      err.response?.data?.detail || "Could not update status"
+    );
+  }
+};
+
+  // --- WebSocket ---
   const scheduleReconnect = (id) => {
     if (reconnectTimerRef.current) return;
     reconnectTimerRef.current = setTimeout(() => {
       reconnectTimerRef.current = null;
-      console.log('🔄 Reconnecting WebSocket...');
       connectWebSocket(id);
     }, 5000);
   };
@@ -176,160 +233,116 @@ export const DeliveryProvider = ({ children }) => {
     if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
     if (wsRef.current) { try { wsRef.current.close(1000, 'Client disconnect'); } catch {} wsRef.current = null; }
     setIsOnline(false);
-    console.log('📴 WebSocket disconnected');
+    console.log('[Context] 📴 WS disconnected');
   };
 
   const connectWebSocket = (id) => {
     if (!id || !token) return;
     if (wsRef.current) { try { wsRef.current.close(1000, 'Reconnect'); } catch {} wsRef.current = null; }
 
-    wsRef.current = new WebSocket(`ws://3.110.207.229/api/ws/delivery/${id}`);
+    const wsUrl = `ws://3.110.207.229/api/ws/delivery/${id}`;
+    wsRef.current = new WebSocket(wsUrl);
 
-    wsRef.current.onopen = () => {
+    wsRef.current.onopen = async () => {
+      console.log('[Context] ✅ WS connected');
       setIsOnline(true);
-      console.log('✅ WebSocket connected');
       wsRef.current.send(JSON.stringify({ type: 'ping' }));
-      fetchOngoingOrders();
+      fetchOrders();
+      fetchDeliveryProfile();
+      if (role === 'delivery') startLocationTracking();
     };
 
     wsRef.current.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        console.log('📩 WS message:', data);
-
+        console.log('[Context] 📩 WS Message:', data);
+        if (['order_request', 'order_accepted', 'order_status', 'order_update'].includes(data.type)) fetchOrders();
+        if (data.type === 'order_accepted' && data.order_id) setAcceptedOrderId(data.order_id);
         if (data.type === 'order_request' && data.order_id) {
           Alert.alert(
             '📦 New Order',
             `Order ID: ${data.order_id}`,
             [
               { text: 'Reject', style: 'destructive', onPress: () => respondOrder(data.order_id, 'reject') },
-              { text: 'Accept', style: 'default', onPress: () => respondOrder(data.order_id, 'accept') }
+              { text: 'Accept', onPress: () => { respondOrder(data.order_id, 'accept'); setAcceptedOrderId(data.order_id); safeNavigate('DeliveryTracking', { orderId: data.order_id }); }},
             ]
           );
-          setOrders(prev => [
-            { id: data.order_id, status: 'pending', orderedOn: new Date().toISOString(), chefName: 'Chef', items: 'N/A' },
-            ...prev
-          ]);
-          safeNavigate('OrderTracking', { orderId: data.order_id });
         }
-
-        if (data.type === 'order_status') {
-          setOngoingOrders(prev =>
-            prev.map(o => o.id === data.order_id ? { ...o, status: data.status, updatedAt: new Date().toISOString() } : o)
-          );
-        }
-
-      } catch (err) { console.warn('⚠️ WS parse error', err); }
+      } catch (err) { console.warn('[Context] ⚠️ WS parse error', err); }
     };
 
-    wsRef.current.onerror = (err) => { console.error('❌ WS error', err); setIsOnline(false); scheduleReconnect(id); };
-    wsRef.current.onclose = (evt) => { setIsOnline(false); if (evt?.code !== 1000) scheduleReconnect(id); console.log('📴 WebSocket closed', evt?.code); };
+    wsRef.current.onerror = (err) => { console.error('[Context] ❌ WS Error', err?.message || err); setIsOnline(false); scheduleReconnect(id); };
+    wsRef.current.onclose = (evt) => { console.log(`[Context] 🔴 WS Closed (Code: ${evt?.code})`); setIsOnline(false); if (evt?.code !== 1000) scheduleReconnect(id); };
   };
 
-  // --- Respond to Order ---
-  const respondOrder = (orderId, response) => {
+  const respondOrder = async (orderId, response) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-
-    let backendStatus = null;
-
-    if (response === 'accept') backendStatus = 'assigned';
-    else if (response === 'picked') backendStatus = 'picked';
-    else if (response === 'delivered') backendStatus = 'delivered';
-    else if (response === 'reject') backendStatus = null; // don’t send invalid status
-
-    if (backendStatus) updateOrderStatus(orderId, backendStatus);
-
     wsRef.current.send(JSON.stringify({ type: 'order_response', order_id: orderId, response }));
-    console.log(`📤 Responded to order ${orderId} with ${response} (mapped: ${backendStatus})`);
+    console.log(`[Context] 📤 Responded ${response} for ${orderId}`);
+    fetchOrders();
   };
 
-  // --- Location tracking ---
+  // --- Location Tracking ---
   const startLocationTracking = async () => {
-    if (role !== 'delivery') return;
-    if (!token) return console.warn('⚠️ Cannot start location tracking: token missing');
-    if (watchIdRef.current) return;
-
+    if (role !== 'delivery' || !token || watchIdRef.current) return;
     if (Platform.OS === 'android') {
-      const granted = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);
-      if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-        console.warn('⚠️ Location permission denied');
-        return;
-      }
+      const fine = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);
+      if (fine !== PermissionsAndroid.RESULTS.GRANTED) { Alert.alert('Permission Denied', 'Allow location access'); return; }
     }
-
     watchIdRef.current = Geolocation.watchPosition(
       async ({ coords }) => {
-        const { latitude, longitude } = coords;
-        try {
-          await authApi('post', '/deliveryupdate', { latitude, longitude, status: true });
-          console.log('📍 Location updated:', latitude, longitude);
-        } catch (err) {
-          console.warn('⚠️ Failed to update location:', err?.response?.data || err.message);
-          if (err?.response?.status === 401) logout();
-        }
+        try { await authApi('post', '/delivery/update-location', { latitude: coords.latitude, longitude: coords.longitude }); }
+        catch (err) { console.warn('[Context] ❌ Failed to send location', err.message); }
       },
-      (error) => console.warn('⚠️ Location watch error:', error),
-      { enableHighAccuracy: true, distanceFilter: 10, interval: 5000, fastestInterval: 2000 }
+      err => console.warn('[Context] ⚠️ Geo Error', err.message),
+      { enableHighAccuracy: true, distanceFilter: 10, interval: 5000, fastestInterval: 3000 }
     );
-
-    console.log('🚦 Location tracking started');
   };
 
-  const stopLocationTracking = async () => {
-    if (watchIdRef.current !== null) {
-      try { Geolocation.clearWatch(watchIdRef.current); } catch {}
-      watchIdRef.current = null;
-
-      try {
-        await authApi('post', '/deliveryupdate', { latitude: 0, longitude: 0, status: false });
-        console.log('🛑 Location tracking stopped');
-      } catch (err) {
-        console.warn('⚠️ Failed to stop location tracking:', err?.response?.data || err.message);
-      }
-    }
+  const stopLocationTracking = () => {
+    if (watchIdRef.current != null) { Geolocation.clearWatch(watchIdRef.current); watchIdRef.current = null; }
   };
 
-  // --- App state handler ---
+  // --- AppState watcher ---
   useEffect(() => {
-    const handleAppStateChange = (nextAppState) => {
-      console.log('📱 App state changed:', nextAppState);
-      if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
-        if (token && deliveryId && role === 'delivery') {
-          connectWebSocket(deliveryId);
-          fetchOngoingOrders();
-          startLocationTracking();
-        }
+    const sub = AppState.addEventListener('change', nextState => {
+      if (appState.current.match(/inactive|background/) && nextState === 'active') {
+        if (deliveryId && token) connectWebSocket(deliveryId);
       }
-      appState.current = nextAppState;
-    };
-    const subscription = AppState.addEventListener('change', handleAppStateChange);
-    return () => subscription.remove();
-  }, [token, deliveryId, role]);
+      appState.current = nextState;
+    });
+    return () => sub.remove();
+  }, [deliveryId, token]);
 
-  // --- Connect WebSocket once token & deliveryId loaded ---
-  useEffect(() => {
-    if (token && deliveryId) connectWebSocket(deliveryId);
-  }, [token, deliveryId]);
+  // --- Connect WS on mount after token & deliveryId ---
+  useEffect(() => { if (deliveryId && token) connectWebSocket(deliveryId); }, [deliveryId, token]);
 
   return (
     <DeliveryContext.Provider value={{
+      isOnline,
+      orders,
+      ongoingOrders,
+      orderHistory,
+      loadingOrders,
       token,
       deliveryId,
       role,
       profile,
-      orders,
-      ongoingOrders,
-      isOnline,
+      acceptedOrderId,
+      setAcceptedOrderId,
+      fetchDeliveryProfile,
       saveAuth,
       logout,
-      fetchDeliveryProfile,
-      fetchOngoingOrders,
-      setIsOnline,
+      fetchOrders,
+      updateOrderStatus,
+      respondOrder,
+      connectWebSocket,
+      disconnectWebSocket,
       startLocationTracking,
       stopLocationTracking,
-      connectWebSocket,
+      setIsOnline,
       safeNavigate,
-      updateOrderStatus
+      authApi
     }}>
       {children}
     </DeliveryContext.Provider>

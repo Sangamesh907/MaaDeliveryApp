@@ -32,7 +32,7 @@ const EditProfileScreen = () => {
   const [token, setToken] = useState('');
   const [loading, setLoading] = useState(true);
 
-  // --- Load token ---
+  // --- Load token from AsyncStorage ---
   const loadAuth = async () => {
     try {
       const savedToken = await AsyncStorage.getItem('@delivery_token');
@@ -50,40 +50,39 @@ const EditProfileScreen = () => {
   const fixImageUrl = (path) => {
     if (!path) return null;
     if (path.startsWith('http')) return path;
-    return `${BASE_URL}${path.replace('/static/chefprofile', '/uploads/profile')}`;
+    return `${BASE_URL}${path}`;
   };
 
   // --- Fetch profile ---
-  useEffect(() => {
+  const fetchProfile = async () => {
     if (!token) return;
+    try {
+      setLoading(true);
+      const res = await axios.get(`${BASE_URL}/api/deliveryme`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
 
-    const fetchProfile = async () => {
-      try {
-        setLoading(true);
-        const res = await axios.get(`${BASE_URL}/api/deliveryme`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+      const data = res.data;
+      if (!data) return;
 
-        const data = res.data;
-        if (!data) return;
+      setName(data.name || '');
+      setEmail(data.email || '');
+      setVehicle(data.vehicle || '');
+      setPhone(data.phone_number || '');
+      setProfilePic({ uri: fixImageUrl(data.photo_url) } || null);
+      setLicenseFront({ uri: fixImageUrl(data.driving_license_front) } || null);
+      setLicenseBack({ uri: fixImageUrl(data.driving_license_back) } || null);
 
-        setName(data.name || '');
-        setEmail(data.email || '');
-        setVehicle(data.vehicle || '');
-        setPhone(data.phone_number || '');
-        setProfilePic({ uri: fixImageUrl(data.photo_url) } || null);
-        setLicenseFront({ uri: fixImageUrl(data.driving_license_front) } || null);
-        setLicenseBack({ uri: fixImageUrl(data.driving_license_back) } || null);
+      await AsyncStorage.setItem('@delivery_profile', JSON.stringify(data));
+    } catch (err) {
+      console.warn('⚠️ Failed to fetch profile:', err.message);
+      Alert.alert('Error', 'Unable to load profile data');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-        await AsyncStorage.setItem('@delivery_profile', JSON.stringify(data));
-      } catch (err) {
-        console.warn('⚠️ Failed to fetch profile:', err.message);
-        Alert.alert('Error', 'Unable to load profile data');
-      } finally {
-        setLoading(false);
-      }
-    };
-
+  useEffect(() => {
     fetchProfile();
   }, [token]);
 
@@ -122,24 +121,17 @@ const EditProfileScreen = () => {
       appendFile(licenseFront, 'driving_license_front');
       appendFile(licenseBack, 'driving_license_back');
 
-      const response = await axios.post(`${BASE_URL}/api/deliveryupdate`, formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-          Authorization: `Bearer ${token}`,
-        },
+      // --- POST update ---
+      await axios.post(`${BASE_URL}/api/deliveryupdate`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data', Authorization: `Bearer ${token}` },
       });
 
-      const updated = response.data.updated;
-      if (updated) {
-        setProfilePic({ uri: fixImageUrl(updated.photo_url) } || null);
-        setLicenseFront({ uri: fixImageUrl(updated.driving_license_front) } || null);
-        setLicenseBack({ uri: fixImageUrl(updated.driving_license_back) } || null);
+      // --- Fetch full updated profile ---
+      await fetchProfile();
 
-        await AsyncStorage.setItem('@delivery_profile', JSON.stringify(updated));
-        Alert.alert('Success', response.data.message, [
-          { text: 'OK', onPress: () => navigation.replace('MainTabs') },
-        ]);
-      }
+      Alert.alert('Success', 'Profile updated successfully', [
+        { text: 'OK', onPress: () => navigation.goBack() },
+      ]);
     } catch (err) {
       console.warn('❌ Profile update error:', err.message);
       Alert.alert('Error', 'Failed to update profile. Please try again.');

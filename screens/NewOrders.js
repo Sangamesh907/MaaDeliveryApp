@@ -9,13 +9,14 @@ import {
   ActivityIndicator,
   Alert,
   RefreshControl,
+  Linking,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import Ionicons from 'react-native-vector-icons/Ionicons';
 import Feather from 'react-native-vector-icons/Feather';
 import { DeliveryContext } from '../Context/DeliveryContext';
 
-const chefPlaceholder = require('../assets/chef_profile.png'); // fallback image
+const chefPlaceholder = require('../assets/chef_profile.png');
 
 // Map raw order to UI-friendly object
 const mapOrderForUI = (order) => {
@@ -29,7 +30,7 @@ const mapOrderForUI = (order) => {
     chefName: order.chef?.name || 'Chef Name',
     chefPhone: order.chef?.phone_number || 'N/A',
     chefLocation: order.chef?.location?.address || 'Unknown Location',
-    distance: order.distance ? `${order.distance.toFixed(1)} km Away` : '?.? km Away',
+    distance: order.distance ? `${order.distance.toFixed(1)} km Away` : 'Distance unknown',
     deliveryLocation: order.address?.area || 'Unknown Area',
     orderedOn: order.created_at ? new Date(order.created_at).toLocaleString() : new Date().toLocaleString(),
     chefImage: order.chef?.profile_pic ? `http://3.110.207.229${order.chef.profile_pic}` : null,
@@ -46,45 +47,52 @@ const NewOrders = ({ onOrderAccepted }) => {
     token,
     logout,
     respondOrder,
+    acceptedOrderId,
+    setAcceptedOrderId,
   } = useContext(DeliveryContext);
 
   const [localOrders, setLocalOrders] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [actionInProgress, setActionInProgress] = useState(false);
 
   const firstLoadRef = useRef(true);
   const alertedOrderIdsRef = useRef(new Set());
 
-  // Sync WebSocket orders
+  const filterNewOrders = (orders) =>
+    orders.filter(order => order.status === 'pending' || order.status === 'new');
+
   useEffect(() => {
     const mappedOrders = wsOrders.map(mapOrderForUI);
+    const filteredOrders = filterNewOrders(mappedOrders);
 
+    // Alert only for new orders
     if (!firstLoadRef.current) {
-      const newOrders = mappedOrders.filter(
+      const newOrders = filteredOrders.filter(
         wsOrder => !localOrders.some(local => local.id === wsOrder.id) &&
                    !alertedOrderIdsRef.current.has(wsOrder.id)
       );
 
-      newOrders.forEach(order => {
+      if (newOrders.length > 0) {
+        const firstNew = newOrders[0];
         Alert.alert(
           '📦 New Order Received',
-          `Order ID: ${order.id}\nItems: ${order.itemsString}\nAmount: ₹${order.amount}`,
+          `Order ID: ${firstNew.id}\nItems: ${firstNew.itemsString}\nAmount: ₹${firstNew.amount}`,
           [
-            { text: 'Reject', onPress: () => handleReject(order.id), style: 'destructive' },
-            { text: 'Accept', onPress: () => handleAccept(order.id), style: 'default' },
+            { text: 'Reject', onPress: () => handleReject(firstNew.id), style: 'destructive' },
+            { text: 'Accept', onPress: () => handleAccept(firstNew.id), style: 'default' },
           ]
         );
-        alertedOrderIdsRef.current.add(order.id);
-      });
+        newOrders.forEach(order => alertedOrderIdsRef.current.add(order.id));
+      }
     } else {
       firstLoadRef.current = false;
     }
 
-    setLocalOrders(mappedOrders);
+    setLocalOrders(filteredOrders);
     setIsLoading(false);
   }, [wsOrders]);
 
-  // Manual refresh
   const handleRefresh = async () => {
     setRefreshing(true);
     if (!token) {
@@ -93,31 +101,63 @@ const NewOrders = ({ onOrderAccepted }) => {
       setRefreshing(false);
       return;
     }
-    try { await fetchOrders(); } catch (err) { console.warn('Refresh failed', err); }
+    try {
+      await fetchOrders();
+    } catch (err) {
+      console.warn('Refresh failed:', err);
+    }
     setRefreshing(false);
   };
 
-  // Accept / Reject
-  const handleAccept = (orderId) => {
+  const handleAccept = async (orderId) => {
+    if (actionInProgress) return;
+    setActionInProgress(true);
     setLocalOrders(prev => prev.filter(o => o.id !== orderId));
-    respondOrder(orderId, 'accept');
-    if (typeof onOrderAccepted === 'function') onOrderAccepted();
+
+    try {
+      await respondOrder(orderId, 'accept');
+      setAcceptedOrderId(orderId);
+
+      if (typeof onOrderAccepted === 'function') onOrderAccepted();
+      await fetchOrders();
+      navigation.navigate('OngoingOrders', { acceptedOrderId: orderId });
+    } catch (err) {
+      console.warn('Accept failed:', err);
+      Alert.alert('Error', 'Failed to accept order. Please try again.');
+    }
+
+    setActionInProgress(false);
   };
 
-  const handleReject = (orderId) => {
+  const handleReject = async (orderId) => {
+    if (actionInProgress) return;
+    setActionInProgress(true);
     setLocalOrders(prev => prev.filter(o => o.id !== orderId));
-    respondOrder(orderId, 'reject');
+
+    try {
+      await respondOrder(orderId, 'reject');
+      await fetchOrders();
+    } catch (err) {
+      console.warn('Reject failed:', err);
+    }
+    setActionInProgress(false);
   };
 
   const handleCall = (phoneNumber) => {
-    Alert.alert('Call', `Calling chef at ${phoneNumber}.`);
+    if (phoneNumber && phoneNumber !== 'N/A') {
+      Linking.openURL(`tel:${phoneNumber}`);
+    } else {
+      Alert.alert('Phone number not available');
+    }
   };
 
-  // Render single order card
   const renderOrderItem = ({ item }) => (
     <View style={styles.orderCard}>
       <View style={styles.chefInfoContainer}>
-        <Image source={item.chefImage ? { uri: item.chefImage } : chefPlaceholder} style={styles.chefImage} />
+        <Image
+          source={item.chefImage ? { uri: item.chefImage } : chefPlaceholder}
+          style={styles.chefImage}
+        />
         <View style={styles.chefDetails}>
           <Text style={styles.chefName}>{item.chefName}</Text>
           <Text style={styles.chefLocation}>
@@ -145,10 +185,18 @@ const NewOrders = ({ onOrderAccepted }) => {
       </View>
 
       <View style={styles.buttonContainer}>
-        <TouchableOpacity style={styles.rejectButton} onPress={() => handleReject(item.id)}>
+        <TouchableOpacity
+          style={[styles.rejectButton, actionInProgress && { opacity: 0.6 }]}
+          onPress={() => handleReject(item.id)}
+          disabled={actionInProgress}
+        >
           <Text style={styles.rejectButtonText}>Reject Order</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.acceptButton} onPress={() => handleAccept(item.id)}>
+        <TouchableOpacity
+          style={[styles.acceptButton, actionInProgress && { opacity: 0.6 }]}
+          onPress={() => handleAccept(item.id)}
+          disabled={actionInProgress}
+        >
           <Text style={styles.acceptButtonText}>Accept Order</Text>
         </TouchableOpacity>
       </View>
@@ -187,7 +235,6 @@ const NewOrders = ({ onOrderAccepted }) => {
 
 export default NewOrders;
 
-// --- Styles ---
 const styles = StyleSheet.create({
   container: { padding: 10, paddingBottom: 20, backgroundColor: '#f8f8f8' },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff' },

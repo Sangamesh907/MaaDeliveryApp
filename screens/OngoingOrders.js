@@ -1,5 +1,5 @@
 // screens/OngoingOrders.js
-import React, { useEffect, useState, useContext } from 'react';
+import React, { useEffect, useState, useContext, useRef } from 'react';
 import {
   View,
   Text,
@@ -15,12 +15,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from 'react-native-vector-icons/Ionicons';
 import Feather from 'react-native-vector-icons/Feather';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import { DeliveryContext } from '../Context/DeliveryContext';
 
-const OrderCard = ({ order }) => {
+const OrderCard = ({ order, isHighlighted }) => {
   const navigation = useNavigation();
-
   const chefName = order.chef?.name || 'Unknown Chef';
   const chefPhoto = order.chef?.profile_pic
     ? { uri: `http://3.110.207.229${order.chef.profile_pic}` }
@@ -34,7 +33,7 @@ const OrderCard = ({ order }) => {
   const deliveryArea = order.address?.area || 'N/A';
   const customerName = order.customer?.name || 'Customer';
   const amount = order.total_price || 0;
-  const earnings = Math.floor(amount * 0.15);
+  const earnings = order.earnings ?? Math.floor(amount * 0.15);
   const status = order.delivery_status || 'Ongoing';
 
   const items =
@@ -47,32 +46,29 @@ const OrderCard = ({ order }) => {
     Linking.openURL(`tel:${phoneNumber}`);
   };
 
-  // Navigate to OrderDetailsScreen
   const openOrderDetails = () => {
     navigation.navigate('OrderDetails', { order });
   };
 
   return (
-    <TouchableOpacity style={styles.orderCard} activeOpacity={0.9} onPress={openOrderDetails}>
+    <TouchableOpacity
+      style={[styles.orderCard, isHighlighted && { borderWidth: 2, borderColor: '#4CAF50' }]}
+      activeOpacity={0.9}
+      onPress={openOrderDetails}
+    >
       {/* Chef Info */}
       <View style={styles.chefInfoContainer}>
         {chefPhoto ? (
           <Image source={chefPhoto} style={styles.chefImage} />
         ) : (
-          <View
-            style={[
-              styles.chefImage,
-              { backgroundColor: '#ccc', justifyContent: 'center', alignItems: 'center' },
-            ]}>
+          <View style={[styles.chefImage, { backgroundColor: '#4CAF50', justifyContent: 'center', alignItems: 'center' }]}>
             <Text style={{ color: '#fff', fontWeight: 'bold' }}>{chefInitials}</Text>
           </View>
         )}
-
         <View style={styles.chefDetails}>
           <Text style={styles.chefName}>{chefName}</Text>
-          <Text style={styles.chefLocation}>{status}</Text>
+          <Text style={styles.chefLocation}>{status.toUpperCase()}</Text>
         </View>
-
         <TouchableOpacity style={styles.callButton} onPress={() => handleCall(order.chef?.phone)}>
           <Ionicons name="call" size={22} color="#4CAF50" />
         </TouchableOpacity>
@@ -81,9 +77,7 @@ const OrderCard = ({ order }) => {
       {/* Order Details */}
       <View style={styles.orderDetailsContainer}>
         <Text style={styles.detailLabel}>Items</Text>
-        <Text style={styles.detailValue} numberOfLines={1}>
-          {items}
-        </Text>
+        <Text style={styles.detailValue} numberOfLines={1}>{items}</Text>
 
         <View style={styles.detailRow}>
           <View>
@@ -106,7 +100,6 @@ const OrderCard = ({ order }) => {
         <Text style={styles.detailValue}>{deliveryArea}</Text>
       </View>
 
-      {/* Navigate button (optional, still navigates to same screen) */}
       <TouchableOpacity style={styles.navigateButton} onPress={openOrderDetails}>
         <Feather name="send" size={18} color="#fff" style={styles.navigateIcon} />
         <Text style={styles.navigateButtonText}>Navigate</Text>
@@ -120,60 +113,40 @@ const OngoingOrders = () => {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const flatListRef = useRef(null);
 
-  const mockOrders = [
-    {
-      _id: '1',
-      chef: { name: 'Sangamesh', phone: '9611523269', profile_pic: null },
-      customer: { name: 'Kailash' },
-      address: { area: 'MG Road' },
-      total_price: 300,
-      delivery_status: 'assigned',
-      items: [{ quantity: 2, food_name: 'Paneer Butter Masala' }],
-    },
-    {
-      _id: '2',
-      chef: { name: 'Ravi', phone: '9876543210', profile_pic: null },
-      customer: { name: 'Priya' },
-      address: { area: 'Brigade Road' },
-      total_price: 450,
-      delivery_status: 'preparing',
-      items: [{ quantity: 1, food_name: 'Veg Biryani' }],
-    },
-  ];
+  const route = useRoute();
+  const acceptedOrderId = route.params?.acceptedOrderId || null;
 
   const fetchOrders = async () => {
-    if (!token) {
-      setOrders(mockOrders);
-      setLoading(false);
-      return;
-    }
-
+    if (!token) return setLoading(false);
     try {
       setLoading(true);
       const res = await fetch('http://3.110.207.229/api/ongoing/delivery/me', {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
-
-      if (Array.isArray(data)) {
-        setOrders(data.length ? data : mockOrders);
-      } else if (data.status === 'success' && Array.isArray(data.orders)) {
-        setOrders(data.orders.length ? data.orders : mockOrders);
-      } else {
-        setOrders(mockOrders);
-      }
-      setLoading(false);
+      if (data.status === 'success' && Array.isArray(data.orders)) setOrders(data.orders);
+      else setOrders([]);
     } catch (err) {
       console.warn('⚠️ Error fetching orders:', err);
-      setOrders(mockOrders);
+      setOrders([]);
+    } finally {
       setLoading(false);
     }
   };
 
+  useEffect(() => { fetchOrders(); }, [token]);
+
+  // Scroll to accepted order
   useEffect(() => {
-    fetchOrders();
-  }, [token]);
+    if (acceptedOrderId && orders.length > 0 && flatListRef.current) {
+      const index = orders.findIndex(o => o._id === acceptedOrderId);
+      if (index >= 0) {
+        setTimeout(() => flatListRef.current.scrollToIndex({ index, animated: true }), 300);
+      }
+    }
+  }, [acceptedOrderId, orders]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -193,11 +166,17 @@ const OngoingOrders = () => {
   return (
     <SafeAreaView style={styles.container}>
       <FlatList
+        ref={flatListRef}
         data={orders}
-        renderItem={({ item }) => <OrderCard order={item} />}
+        renderItem={({ item }) => <OrderCard order={item} isHighlighted={item._id === acceptedOrderId} />}
         keyExtractor={item => item._id}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         contentContainerStyle={styles.scrollViewContent}
+        ListEmptyComponent={
+          <View style={{ alignItems: 'center', marginTop: 50 }}>
+            <Text style={{ fontSize: 16, color: '#555' }}>No ongoing orders available.</Text>
+          </View>
+        }
       />
     </SafeAreaView>
   );
@@ -205,7 +184,6 @@ const OngoingOrders = () => {
 
 export default OngoingOrders;
 
-// ------------------- Styles -------------------
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f9f9f9' },
   scrollViewContent: { paddingHorizontal: 10, paddingTop: 15, paddingBottom: 20 },
